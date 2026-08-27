@@ -5,7 +5,6 @@ import numpy as np
 from PIL import Image
 import torch
 import tempfile
-from gradio_imageslider import ImageSlider
 
 from depth_anything_v2.dpt import DepthAnythingV2
 
@@ -30,7 +29,7 @@ model_configs = {
     'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
     'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]}
 }
-encoder = 'vitl'
+encoder = 'vits'
 model = DepthAnythingV2(**model_configs[encoder])
 state_dict = torch.load(f'checkpoints/depth_anything_v2_{encoder}.pth', map_location="cpu")
 model.load_state_dict(state_dict)
@@ -48,18 +47,20 @@ with gr.Blocks(css=css) as demo:
     gr.Markdown(description)
     gr.Markdown("### Depth Prediction demo")
 
+    # Indent the Row and everything inside it so it belongs to the Blocks context
     with gr.Row():
         input_image = gr.Image(label="Input Image", type='numpy', elem_id='img-display-input')
-        depth_image_slider = ImageSlider(label="Depth Map with Slider View", elem_id='img-display-output', position=0.5)
+        depth_image = gr.Image(label="Depth Map", type='numpy', elem_id='img-display-output')
+    
+    # Buttons and Files also belong inside the Blocks context
     submit = gr.Button(value="Compute Depth")
-    gray_depth_file = gr.File(label="Grayscale depth map", elem_id="download",)
-    raw_file = gr.File(label="16-bit raw output (can be considered as disparity)", elem_id="download",)
+    gray_depth_file = gr.File(label="Grayscale depth map", elem_id="download")
+    raw_file = gr.File(label="16-bit raw output (can be considered as disparity)", elem_id="download")
 
     cmap = matplotlib.colormaps.get_cmap('Spectral_r')
 
     def on_submit(image):
         original_image = image.copy()
-
         h, w = image.shape[:2]
 
         depth = predict_depth(image[:, :, ::-1])
@@ -76,13 +77,13 @@ with gr.Blocks(css=css) as demo:
         tmp_gray_depth = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
         gray_depth.save(tmp_gray_depth.name)
 
-        return [(original_image, colored_depth), tmp_gray_depth.name, tmp_raw_depth.name]
+        return [colored_depth, tmp_gray_depth.name, tmp_raw_depth.name]
 
-    submit.click(on_submit, inputs=[input_image], outputs=[depth_image_slider, gray_depth_file, raw_file])
+    # The click event and Examples must also be indented inside the Blocks context
+    submit.click(on_submit, inputs=[input_image], outputs=[depth_image, gray_depth_file, raw_file])
 
     example_files = glob.glob('assets/examples/*')
-    examples = gr.Examples(examples=example_files, inputs=[input_image], outputs=[depth_image_slider, gray_depth_file, raw_file], fn=on_submit)
-
+    examples = gr.Examples(examples=example_files, inputs=[input_image], outputs=[depth_image, gray_depth_file, raw_file], fn=on_submit)
 
 if __name__ == '__main__':
     demo.queue().launch()
