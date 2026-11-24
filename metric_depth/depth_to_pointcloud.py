@@ -22,13 +22,15 @@ Arguments:
 import argparse
 import cv2
 import glob
-import numpy as np
-import open3d as o3d
 import os
-from PIL import Image
+import sys
 import torch
 
 from depth_anything_v2.dpt import DepthAnythingV2
+
+# Shared 3D reconstruction module lives at the repository root.
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+from reconstruction import ReconstructionConfig, reconstruct  # noqa: E402
 
 
 def main():
@@ -48,6 +50,12 @@ def main():
                         help='Focal length along the x-axis.')
     parser.add_argument('--focal-length-y', default=470.4, type=float,
                         help='Focal length along the y-axis.')
+    parser.add_argument('--edge-threshold', default=0.04, type=float,
+                        help='Relative depth jump treated as an object edge (removes flying pixels). 0 disables.')
+    parser.add_argument('--keep-background', action='store_true',
+                        help='Keep pixels saturated at --max-depth (usually sky).')
+    parser.add_argument('--mesh', action='store_true',
+                        help='Also save a coloured triangle mesh (.glb).')
 
     args = parser.parse_args()
 
@@ -84,30 +92,27 @@ def main():
     for k, filename in enumerate(filenames):
         print(f'Processing {k+1}/{len(filenames)}: {filename}')
 
-        # Load the image
-        color_image = Image.open(filename).convert('RGB')
-        width, height = color_image.size
-
-        # Read the image using OpenCV
         image = cv2.imread(filename)
-        pred = depth_anything.infer_image(image, height)
+        if image is None:
+            print(f'  skipped (not an image)')
+            continue
+        pred = depth_anything.infer_image(image, image.shape[0])
 
-        # Resize depth prediction to match the original image size
-        resized_pred = Image.fromarray(pred).resize((width, height), Image.NEAREST)
+        scene = reconstruct(image[:, :, ::-1], pred, ReconstructionConfig(
+            depth_type='metric',
+            focal_length_x=args.focal_length_x,
+            focal_length_y=args.focal_length_y,
+            max_depth=args.max_depth,
+            edge_threshold=args.edge_threshold,
+            remove_background=not args.keep_background,
+            max_side=None,              # full resolution
+            coordinate_frame='opencv',  # x right, y down, z forward, in metres
+        ))
 
-        # Generate mesh grid and calculate point cloud coordinates
-        x, y = np.meshgrid(np.arange(width), np.arange(height))
-        x = (x - width / 2) / args.focal_length_x
-        y = (y - height / 2) / args.focal_length_y
-        z = np.array(resized_pred)
-        points = np.stack((np.multiply(x, z), np.multiply(y, z), z), axis=-1).reshape(-1, 3)
-        colors = np.array(color_image).reshape(-1, 3) / 255.0
-
-        # Create the point cloud and save it to the output directory
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(points)
-        pcd.colors = o3d.utility.Vector3dVector(colors)
-        o3d.io.write_point_cloud(os.path.join(args.outdir, os.path.splitext(os.path.basename(filename))[0] + ".ply"), pcd)
+        stem = os.path.join(args.outdir, os.path.splitext(os.path.basename(filename))[0])
+        scene.save_ply(stem + '.ply')
+        if args.mesh:
+            scene.save_glb(stem + '.glb')
 
 
 if __name__ == '__main__':
