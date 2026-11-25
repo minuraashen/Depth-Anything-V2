@@ -199,3 +199,24 @@ If you find this project useful, please consider citing:
   year={2024}
 }
 ```
+  conda activate depth-anything
+  cd metric_depth
+
+  # Indoor depth map, also saving raw metres as .npy
+  python run.py --encoder vits --load-from
+  checkpoints/depth_anything_v2_metric_hypersim_vits.pth
+  --max-depth 20 --img-path ../assets/examples --outdir
+  ../metric_results --save-numpy
+
+  # Outdoor
+  python run.py --encoder vits --load-from
+  checkpoints/depth_anything_v2_metric_vkitti_vits.pth
+  --max-depth 80 --img-path ../assets/examples --outdir
+  ../metric_results_outdoor
+
+  # Metric 3D point cloud + mesh using your reconstruction
+  module
+  python depth_to_pointcloud.py --encoder vits --load-from
+  checkpoints/depth_anything_v2_metric_hypersim_vits.pth
+  --max-depth 20 --img-path ../assets/examples/demo01.jpg
+  --outdir ../vis_pointcloud --mesh
