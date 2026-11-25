@@ -1,3 +1,13 @@
+# =============================================================================
+# metric_depth/run.py  —  inference with the METRIC depth models (output in METRES)
+# -----------------------------------------------------------------------------
+# Same flow as the top-level run.py, but:
+#   * builds the metric model (Sigmoid x max_depth head) and loads a metric checkpoint
+#     (fine-tuned on Hypersim = indoor, max 20 m, or Virtual KITTI 2 = outdoor, max 80 m)
+#   * --save-numpy stores the raw depth in metres as .npy (useful for 3D / point clouds)
+#   * uses the 'Spectral' colour map (not reversed) because here larger = FARTHER,
+#     so near objects still appear red and far objects blue
+# =============================================================================
 import argparse
 import cv2
 import glob
@@ -6,7 +16,7 @@ import numpy as np
 import os
 import torch
 
-from depth_anything_v2.dpt import DepthAnythingV2
+from depth_anything_v2.dpt import DepthAnythingV2   # metric version (metric_depth/depth_anything_v2/dpt.py)
 
 
 if __name__ == '__main__':
@@ -35,6 +45,7 @@ if __name__ == '__main__':
         'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]}
     }
     
+    # max_depth must match the checkpoint: 20 for the Hypersim (indoor) model, 80 for VKITTI (outdoor)
     depth_anything = DepthAnythingV2(**{**model_configs[args.encoder], 'max_depth': args.max_depth})
     depth_anything.load_state_dict(torch.load(args.load_from, map_location='cpu'))
     depth_anything = depth_anything.to(DEVICE).eval()
@@ -57,9 +68,9 @@ if __name__ == '__main__':
         
         raw_image = cv2.imread(filename)
         
-        depth = depth_anything.infer_image(raw_image, args.input_size)
+        depth = depth_anything.infer_image(raw_image, args.input_size)   # (H, W) depth in METRES
         
-        if args.save_numpy:
+        if args.save_numpy:   # keep the real metric values before normalising for display
             output_path = os.path.join(args.outdir, os.path.splitext(os.path.basename(filename))[0] + '_raw_depth_meter.npy')
             np.save(output_path, depth)
         
