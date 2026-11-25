@@ -1,3 +1,12 @@
+# =============================================================================
+# run_video.py  —  same as run.py but for VIDEOS
+# -----------------------------------------------------------------------------
+# Reads a video frame by frame, runs depth_anything.infer_image() on EACH frame
+# independently, colours the depth, and writes a new .mp4.
+# Note: frames are processed independently (no temporal smoothing), so the depth can
+# flicker slightly between frames. Each frame is also min-max normalised on its own.
+# Example:  python run_video.py --encoder vits --video-path assets/examples_video --outdir video_depth_vis
+# =============================================================================
 import argparse
 import cv2
 import glob
@@ -25,6 +34,7 @@ if __name__ == '__main__':
     
     DEVICE = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
     
+    # Same model configurations as run.py (decoder width + reassembled channels per encoder size)
     model_configs = {
         'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
         'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
@@ -39,6 +49,8 @@ if __name__ == '__main__':
     if os.path.isfile(args.video_path):
         if args.video_path.endswith('txt'):
             with open(args.video_path, 'r') as f:
+                # NOTE (bug in the original repo): this stores the list in `lines`, not
+                # `filenames`, so passing a .txt list crashes later. Single files and folders work.
                 lines = f.read().splitlines()
         else:
             filenames = [args.video_path]
@@ -53,6 +65,7 @@ if __name__ == '__main__':
     for k, filename in enumerate(filenames):
         print(f'Progress {k+1}/{len(filenames)}: {filename}')
         
+        # Open the input video and read its size and frame rate (the output keeps the same fps)
         raw_video = cv2.VideoCapture(filename)
         frame_width, frame_height = int(raw_video.get(cv2.CAP_PROP_FRAME_WIDTH)), int(raw_video.get(cv2.CAP_PROP_FRAME_HEIGHT))
         frame_rate = int(raw_video.get(cv2.CAP_PROP_FPS))
@@ -65,12 +78,13 @@ if __name__ == '__main__':
         output_path = os.path.join(args.outdir, os.path.splitext(os.path.basename(filename))[0] + '.mp4')
         out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*"mp4v"), frame_rate, (output_width, frame_height))
         
+        # Frame-by-frame loop: read -> predict depth -> colour -> write
         while raw_video.isOpened():
             ret, raw_frame = raw_video.read()
             if not ret:
-                break
+                break   # end of video
             
-            depth = depth_anything.infer_image(raw_frame, args.input_size)
+            depth = depth_anything.infer_image(raw_frame, args.input_size)   # same call as for single images
             
             depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
             depth = depth.astype(np.uint8)
