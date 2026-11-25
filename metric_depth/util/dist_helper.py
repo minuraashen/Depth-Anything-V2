@@ -5,6 +5,9 @@ import torch
 import torch.distributed as dist
 
 
+# Multi-GPU boilerplate: reads rank / world size from the environment (torchrun or SLURM),
+# selects this process's GPU and starts the NCCL process group used by DistributedDataParallel.
+# (The docstring below says "AdaHessian Optimizer" - a copy-paste leftover in the original code.)
 def setup_distributed(backend="nccl", port=None):
     """AdaHessian Optimizer
     Lifted from https://github.com/BIGBALLON/distribuuuu/blob/master/distribuuuu/utils.py

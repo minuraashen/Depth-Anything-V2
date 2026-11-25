@@ -6,10 +6,17 @@ from torchvision.transforms import Compose
 from dataset.transform import Resize, NormalizeImage, PrepareForNet
 
 
+# =============================================================================
+# kitti.py  —  KITTI loader (REAL outdoor driving data, LiDAR ground truth)
+# -----------------------------------------------------------------------------
+# Only used for VALIDATION of the outdoor metric model: train on synthetic Virtual
+# KITTI 2, test on real KITTI -> measures synthetic-to-real transfer.
+# KITTI GT comes from a sparse LiDAR: most pixels have no value (stored as 0).
+# =============================================================================
 class KITTI(Dataset):
     def __init__(self, filelist_path, mode, size=(518, 518)):
         if mode != 'val':
-            raise NotImplementedError
+            raise NotImplementedError   # validation only
         
         self.mode = mode
         self.size = size
@@ -47,7 +54,7 @@ class KITTI(Dataset):
         sample['depth'] = torch.from_numpy(sample['depth'])
         sample['depth'] = sample['depth'] / 256.0  # convert in meters
         
-        sample['valid_mask'] = sample['depth'] > 0
+        sample['valid_mask'] = sample['depth'] > 0   # only pixels where the LiDAR measured something
         
         sample['image_path'] = self.filelist[item].split(' ')[0]
         
