@@ -1,3 +1,12 @@
+# =============================================================================
+# transform.py  —  image PREPROCESSING used before the network
+# -----------------------------------------------------------------------------
+#   Resize         : keep aspect ratio, shorter side -> 518, both sides multiples of 14
+#   NormalizeImage : (x - mean) / std  with ImageNet statistics
+#   PrepareForNet  : HWC -> CHW, float32 (PyTorch layout)
+# Each transform takes and returns a dict ("sample") so that the image, depth
+# label and mask can be transformed together during training.
+# =============================================================================
 import numpy as np
 import cv2
 
@@ -49,6 +58,8 @@ class Resize(object):
         self.__image_interpolation_method = image_interpolation_method
 
     def constrain_to_multiple_of(self, x, min_val=0, max_val=None):
+        # Round x to the nearest multiple of 14 (the ViT patch size), but never go
+        # above max_val (round down instead) or below min_val (round up instead).
         y = (np.round(x / self.__multiple_of) * self.__multiple_of).astype(int)
 
         if max_val is not None and y > max_val:
@@ -60,6 +71,9 @@ class Resize(object):
         return y
 
     def get_size(self, width, height):
+        # Example (what Depth Anything uses: 518, keep_aspect_ratio, lower_bound, multiple of 14):
+        #   1920 x 1080 photo -> scale = 518/1080 -> 921 x 518 -> rounded -> 924 x 518
+        #   -> 66 x 37 patches of 14x14 pixels
         # determine new height and width
         scale_height = self.__height / height
         scale_width = self.__width / width
@@ -67,6 +81,7 @@ class Resize(object):
         if self.__keep_aspect_ratio:
             if self.__resize_method == "lower_bound":
                 # scale such that output size is lower bound
+                # (use the LARGER scale -> both sides end up >= target, i.e. shorter side = target)
                 if scale_width > scale_height:
                     # fit width
                     scale_height = scale_width
@@ -112,6 +127,8 @@ class Resize(object):
         # resize sample
         sample["image"] = cv2.resize(sample["image"], (width, height), interpolation=self.__image_interpolation_method)
 
+        # During training the depth label / mask are resized too. NEAREST interpolation is
+        # used so that depth values are not blended across object boundaries.
         if self.__resize_target:
             if "depth" in sample:
                 sample["depth"] = cv2.resize(sample["depth"], (width, height), interpolation=cv2.INTER_NEAREST)
@@ -125,6 +142,8 @@ class Resize(object):
 class NormalizeImage(object):
     """Normlize image by given mean and std.
     """
+    # Per-channel standardisation with ImageNet mean/std, matching how the DINOv2 encoder
+    # was pre-trained (the encoder expects inputs in this range).
 
     def __init__(self, mean, std):
         self.__mean = mean
@@ -139,13 +158,14 @@ class NormalizeImage(object):
 class PrepareForNet(object):
     """Prepare sample for usage as network input.
     """
+    # OpenCV/numpy images are H x W x C; PyTorch convolutions expect C x H x W.
 
     def __init__(self):
         pass
 
     def __call__(self, sample):
-        image = np.transpose(sample["image"], (2, 0, 1))
-        sample["image"] = np.ascontiguousarray(image).astype(np.float32)
+        image = np.transpose(sample["image"], (2, 0, 1))                 # HWC -> CHW
+        sample["image"] = np.ascontiguousarray(image).astype(np.float32)  # contiguous memory, float32
 
         if "depth" in sample:
             depth = sample["depth"].astype(np.float32)
