@@ -13,7 +13,8 @@ def _fit(frame, max_side):
     return cv2.resize(frame, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA)
 
 
-def video_to_depth(model, video_path, output_path, input_size=518, max_side=1280, smoothing=0.2, progress=None):
+def video_to_depth(model, video_path, output_path, input_size=518, max_side=1280, smoothing=0.2, progress=None,
+                   metric=False):
     """Write a colourised depth video for `video_path` to `output_path` (.webm, VP8).
 
     Each frame's depth is relative, so normalising every frame by its own min/max makes
@@ -22,6 +23,7 @@ def video_to_depth(model, video_path, output_path, input_size=518, max_side=1280
 
     Args:
         progress: optional callable(done_frames, total_frames).
+        metric: True if `model` outputs metric depth (larger = farther) instead of relative disparity.
     Returns:
         output_path
     """
@@ -39,6 +41,8 @@ def video_to_depth(model, video_path, output_path, input_size=518, max_side=1280
                 break
             frame = _fit(frame, max_side)
             depth = model.infer_image(frame, input_size)
+            if metric:
+                depth = -depth  # metric depth grows with distance; flip so near stays red as in relative mode
 
             f_lo, f_hi = np.percentile(depth, [1, 99])
             lo = f_lo if lo is None else (1 - smoothing) * lo + smoothing * f_lo
