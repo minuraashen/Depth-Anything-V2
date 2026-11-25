@@ -13,6 +13,9 @@ from torch import Tensor
 from torch import nn
 
 
+# LayerScale (from CaiT): multiply a residual branch by a learnable per-channel vector
+# gamma before adding it back to x. Helps train very deep ViTs stably.
+# DINOv2 here uses init_values=1.0 (set in dinov2.py); trained gammas come from the checkpoint.
 class LayerScale(nn.Module):
     def __init__(
         self,

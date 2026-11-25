@@ -12,9 +12,12 @@
 from torch import nn
 
 
+# Stochastic depth ("DropPath"): during training, randomly zero a whole residual branch
+# for some samples (a regulariser for deep networks). At inference it does nothing,
+# and Depth Anything uses drop rate 0 anyway.
 def drop_path(x, drop_prob: float = 0.0, training: bool = False):
     if drop_prob == 0.0 or not training:
-        return x
+        return x   # inference / rate 0 -> identity
     keep_prob = 1 - drop_prob
     shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # work with diff dim tensors, not just 2D ConvNets
     random_tensor = x.new_empty(shape).bernoulli_(keep_prob)

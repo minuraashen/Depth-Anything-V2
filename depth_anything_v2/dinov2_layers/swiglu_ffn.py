@@ -10,6 +10,10 @@ from torch import Tensor, nn
 import torch.nn.functional as F
 
 
+# SwiGLU feed-forward network: used INSTEAD of the plain MLP only in ViT-Giant (vitg).
+#   hidden = SiLU(x W1) * (x W2)     (a gated activation)
+#   out    = hidden W3
+# Uses xFormers' fused kernel if installed, otherwise the plain PyTorch version below.
 class SwiGLUFFN(nn.Module):
     def __init__(
         self,
@@ -54,6 +58,8 @@ class SwiGLUFFNFused(SwiGLU):
     ) -> None:
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
+        # 2/3 of the usual hidden size keeps the parameter count similar to a normal MLP
+        # (SwiGLU has 3 weight matrices instead of 2); rounded up to a multiple of 8
         hidden_features = (int(hidden_features * 2 / 3) + 7) // 8 * 8
         super().__init__(
             in_features=in_features,
