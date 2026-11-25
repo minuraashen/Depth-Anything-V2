@@ -1,3 +1,11 @@
+# =============================================================================
+# metric_depth/dataset/transform.py  —  TRAINING-time transforms
+# -----------------------------------------------------------------------------
+# Resize / NormalizeImage / PrepareForNet work like ../../depth_anything_v2/util/transform.py
+# (see the comments there), extended to also handle extra targets (disparity, semseg_mask).
+# New here: Crop -> random 518x518 crop so every training sample has the same shape.
+# apply_min_size is not used by the metric-depth datasets.
+# =============================================================================
 import cv2
 import math
 import numpy as np
@@ -255,6 +263,8 @@ class Crop(object):
             self.size = size
 
     def __call__(self, sample):
+        # After Resize (shorter side = 518) pick a random 518x518 window and cut the
+        # image, depth and mask at the SAME location (also acts as data augmentation)
         h, w = sample['image'].shape[-2:]
         assert h >= self.size[0] and w >= self.size[1], 'Wrong size'
         

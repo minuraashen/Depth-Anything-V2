@@ -8,6 +8,13 @@
 #   https://github.com/facebookresearch/dino/blob/master/vision_transformer.py
 #   https://github.com/rwightman/pytorch-image-models/tree/master/timm/layers/patch_embed.py
 
+# ONE TRANSFORMER BLOCK (pre-norm ViT block), repeated 12/24/40 times in the encoder:
+#     x = x + LayerScale1( Attention( LayerNorm1(x) ) )     <- tokens exchange information
+#     x = x + LayerScale2( MLP( LayerNorm2(x) ) )           <- each token processed on its own
+# Input and output shape are the same: [B, N_tokens, dim].
+# Most of this file (stochastic depth, nested tensors) only matters during TRAINING;
+# at inference the simple branch at the end of Block.forward is what runs.
+
 import logging
 from typing import Callable, List, Any, Tuple, Dict
 
@@ -62,11 +69,11 @@ class Block(nn.Module):
             attn_drop=attn_drop,
             proj_drop=drop,
         )
-        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()   # learnable per-channel scale
         self.drop_path1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
         self.norm2 = norm_layer(dim)
-        mlp_hidden_dim = int(dim * mlp_ratio)
+        mlp_hidden_dim = int(dim * mlp_ratio)   # MLP expands to 4x the token dim, then back
         self.mlp = ffn_layer(
             in_features=dim,
             hidden_features=mlp_hidden_dim,
@@ -102,11 +109,14 @@ class Block(nn.Module):
             x = x + self.drop_path1(attn_residual_func(x))
             x = x + self.drop_path1(ffn_residual_func(x))  # FIXME: drop_path2
         else:
-            x = x + attn_residual_func(x)
-            x = x + ffn_residual_func(x)
+            # INFERENCE path (what runs in Depth Anything): two residual sub-layers
+            x = x + attn_residual_func(x)   # self-attention + skip connection
+            x = x + ffn_residual_func(x)    # MLP + skip connection
         return x
 
 
+# ---- Training-only helpers below: "stochastic depth" (randomly skip a block's
+# ---- residual for some samples in the batch) and xFormers nested-tensor support.
 def drop_add_residual_stochastic_depth(
     x: Tensor,
     residual_func: Callable[[Tensor], Tensor],
@@ -202,6 +212,9 @@ def drop_add_residual_stochastic_depth_list(
 
 
 class NestedTensorBlock(Block):
+    # The block class actually used by dinov2.py. For a normal tensor input it simply
+    # calls Block.forward (see forward() at the bottom); the "nested" path handles a
+    # list of differently sized images at once and needs xFormers.
     def forward_nested(self, x_list: List[Tensor]) -> List[Tensor]:
         """
         x_list contains a list of tensors to nest together and run

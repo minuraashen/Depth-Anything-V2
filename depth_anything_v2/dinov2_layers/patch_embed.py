@@ -8,6 +8,11 @@
 #   https://github.com/facebookresearch/dino/blob/master/vision_transformer.py
 #   https://github.com/rwightman/pytorch-image-models/tree/master/timm/layers/patch_embed.py
 
+# PatchEmbed = step 1 of the ViT: turn the image into a sequence of tokens.
+# A Conv2d with kernel_size = stride = 14 looks at each non-overlapping 14x14 patch
+# exactly once and maps its 14*14*3 = 588 pixel values to one embed_dim vector.
+# (This is equivalent to "flatten each patch + linear layer".)
+
 from typing import Callable, Optional, Tuple, Union
 
 from torch import Tensor
@@ -63,19 +68,20 @@ class PatchEmbed(nn.Module):
 
         self.flatten_embedding = flatten_embedding
 
-        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_HW, stride=patch_HW)
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_HW, stride=patch_HW)  # one output per 14x14 patch
         self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
 
     def forward(self, x: Tensor) -> Tensor:
         _, _, H, W = x.shape
         patch_H, patch_W = self.patch_size
 
+        # This is why the preprocessing (util/transform.py Resize) makes sides multiples of 14
         assert H % patch_H == 0, f"Input image height {H} is not a multiple of patch height {patch_H}"
         assert W % patch_W == 0, f"Input image width {W} is not a multiple of patch width: {patch_W}"
 
-        x = self.proj(x)  # B C H W
+        x = self.proj(x)  # B C H W          e.g. [B, 3, 518, 518] -> [B, 1024, 37, 37]
         H, W = x.size(2), x.size(3)
-        x = x.flatten(2).transpose(1, 2)  # B HW C
+        x = x.flatten(2).transpose(1, 2)  # B HW C      -> [B, 1369, 1024]  (sequence of 1369 tokens)
         x = self.norm(x)
         if not self.flatten_embedding:
             x = x.reshape(-1, H, W, self.embed_dim)  # B H W C

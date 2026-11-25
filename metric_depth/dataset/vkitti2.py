@@ -6,6 +6,12 @@ from torchvision.transforms import Compose
 from dataset.transform import Resize, NormalizeImage, PrepareForNet, Crop
 
 
+# =============================================================================
+# vkitti2.py  —  Virtual KITTI 2 loader (synthetic OUTDOOR driving scenes)
+# -----------------------------------------------------------------------------
+# Used to fine-tune the OUTDOOR metric model (max_depth = 80 m). Same structure as
+# hypersim.py; depth PNGs are stored in centimetres.
+# =============================================================================
 class VKITTI2(Dataset):
     def __init__(self, filelist_path, mode, size=(518, 518)):
         
@@ -44,7 +50,7 @@ class VKITTI2(Dataset):
         sample['image'] = torch.from_numpy(sample['image'])
         sample['depth'] = torch.from_numpy(sample['depth'])
         
-        sample['valid_mask'] = (sample['depth'] <= 80)
+        sample['valid_mask'] = (sample['depth'] <= 80)   # ignore far pixels (e.g. sky) beyond 80 m
         
         sample['image_path'] = self.filelist[item].split(' ')[0]
         

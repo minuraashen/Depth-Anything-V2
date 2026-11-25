@@ -8,7 +8,20 @@ from torchvision.transforms import Compose
 from dataset.transform import Resize, NormalizeImage, PrepareForNet, Crop
 
 
+# =============================================================================
+# hypersim.py  —  Hypersim dataset loader (synthetic INDOOR scenes, Apple)
+# -----------------------------------------------------------------------------
+# Used to fine-tune the INDOOR metric model. Each line of the split file is
+# "<image path> <depth .hdf5 path>". Returns a dict:
+#   image [3, 518, 518] (normalised), depth [518, 518] in metres, valid_mask [518, 518]
+# =============================================================================
+
+
 def hypersim_distance_to_depth(npyDistance):
+    # Hypersim stores the EUCLIDEAN DISTANCE from the camera centre to each point
+    # (length along the viewing ray), but depth models predict PLANAR depth Z
+    # (distance along the optical axis). Conversion with the pinhole model:
+    #   ray for pixel (x, y) = (x - cx, y - cy, f)   ->   Z = distance * f / ||ray||
     intWidth, intHeight, fltFocal = 1024, 768, 886.81
 
     npyImageplaneX = np.linspace((-0.5 * intWidth) + 0.5, (0.5 * intWidth) - 0.5, intWidth).reshape(
@@ -33,6 +46,8 @@ class Hypersim(Dataset):
             self.filelist = f.read().splitlines()
         
         net_w, net_h = size
+        # Same preprocessing as inference; in training the GT depth is resized with the
+        # image (resize_target=True) and a random 518x518 Crop is taken (fixed batch shape).
         self.transform = Compose([
             Resize(
                 width=net_w,
@@ -63,6 +78,7 @@ class Hypersim(Dataset):
         sample['image'] = torch.from_numpy(sample['image'])
         sample['depth'] = torch.from_numpy(sample['depth'])
         
+        # Pixels without valid geometry are stored as NaN in Hypersim -> mark them invalid (ignored by the loss)
         sample['valid_mask'] = (torch.isnan(sample['depth']) == 0)
         sample['depth'][sample['valid_mask'] == 0] = 0
         

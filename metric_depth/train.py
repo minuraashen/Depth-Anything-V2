@@ -1,3 +1,19 @@
+# =============================================================================
+# metric_depth/train.py  —  FINE-TUNING Depth Anything V2 for METRIC depth (metres)
+# -----------------------------------------------------------------------------
+# This is the ONLY training code released in the repo. It is NOT the training of the
+# main relative-depth model from the paper (synthetic-only teacher -> 62M pseudo
+# labels -> students with L_ssi + L_gm); that code was not released.
+#
+# What it does (paper Sec. 7.3 / App. B.12):
+#   * start from the released RELATIVE-depth checkpoint (encoder weights only)
+#   * fine-tune on a SYNTHETIC dataset with metric ground truth:
+#       Hypersim        (indoor,  max_depth = 20 m)
+#       Virtual KITTI 2 (outdoor, max_depth = 80 m)
+#   * loss: scale-invariant log loss (SiLog), see util/loss.py
+#   * evaluate every epoch with standard depth metrics (d1, AbsRel, RMSE, ...)
+# Runs on multiple GPUs with PyTorch DistributedDataParallel; launch with dist_train.sh.
+# =============================================================================
 import argparse
 import logging
 import os
@@ -17,7 +33,7 @@ from torch.utils.tensorboard import SummaryWriter
 from dataset.hypersim import Hypersim
 from dataset.kitti import KITTI
 from dataset.vkitti2 import VKITTI2
-from depth_anything_v2.dpt import DepthAnythingV2
+from depth_anything_v2.dpt import DepthAnythingV2   # the METRIC version (Sigmoid x max_depth output)
 from util.dist_helper import setup_distributed
 from util.loss import SiLogLoss
 from util.metric import eval_depth
@@ -28,13 +44,13 @@ parser = argparse.ArgumentParser(description='Depth Anything V2 for Metric Depth
 
 parser.add_argument('--encoder', default='vitl', choices=['vits', 'vitb', 'vitl', 'vitg'])
 parser.add_argument('--dataset', default='hypersim', choices=['hypersim', 'vkitti'])
-parser.add_argument('--img-size', default=518, type=int)
-parser.add_argument('--min-depth', default=0.001, type=float)
-parser.add_argument('--max-depth', default=20, type=float)
+parser.add_argument('--img-size', default=518, type=int)          # training crop size 518 x 518
+parser.add_argument('--min-depth', default=0.001, type=float)     # ignore GT depth outside [min, max]
+parser.add_argument('--max-depth', default=20, type=float)        # 20 m indoor, 80 m outdoor
 parser.add_argument('--epochs', default=40, type=int)
-parser.add_argument('--bs', default=2, type=int)
-parser.add_argument('--lr', default=0.000005, type=float)
-parser.add_argument('--pretrained-from', type=str)
+parser.add_argument('--bs', default=2, type=int)                  # batch size PER GPU
+parser.add_argument('--lr', default=0.000005, type=float)         # 5e-6 for the encoder (decoder gets 10x)
+parser.add_argument('--pretrained-from', type=str)                # path to the relative-depth checkpoint
 parser.add_argument('--save-path', type=str, required=True)
 parser.add_argument('--local-rank', default=0, type=int)
 parser.add_argument('--port', default=None, type=int)
@@ -48,16 +64,20 @@ def main():
     logger = init_log('global', logging.INFO)
     logger.propagate = 0
     
+    # Multi-GPU setup: rank = id of this process/GPU, world_size = number of GPUs
     rank, world_size = setup_distributed(port=args.port)
     
-    if rank == 0:
+    if rank == 0:   # only the main process logs and writes TensorBoard files
         all_args = {**vars(args), 'ngpus': world_size}
         logger.info('{}\n'.format(pprint.pformat(all_args)))
         writer = SummaryWriter(args.save_path)
     
     cudnn.enabled = True
-    cudnn.benchmark = True
+    cudnn.benchmark = True   # let cuDNN pick the fastest conv algorithms (input size is fixed)
     
+    # ---------------- Datasets ----------------
+    # Train on synthetic data with exact metric depth; validate on Hypersim val (indoor)
+    # or on real KITTI (outdoor) -> tests synthetic-to-real transfer.
     size = (args.img_size, args.img_size)
     if args.dataset == 'hypersim':
         trainset = Hypersim('dataset/splits/hypersim/train.txt', 'train', size=size)
@@ -65,6 +85,7 @@ def main():
         trainset = VKITTI2('dataset/splits/vkitti2/train.txt', 'train', size=size)
     else:
         raise NotImplementedError
+    # DistributedSampler: each GPU gets a different slice of the data each epoch
     trainsampler = torch.utils.data.distributed.DistributedSampler(trainset)
     trainloader = DataLoader(trainset, batch_size=args.bs, pin_memory=True, num_workers=4, drop_last=True, sampler=trainsampler)
     
@@ -79,6 +100,7 @@ def main():
     
     local_rank = int(os.environ["LOCAL_RANK"])
     
+    # ---------------- Model ----------------
     model_configs = {
         'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
         'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
@@ -88,21 +110,28 @@ def main():
     model = DepthAnythingV2(**{**model_configs[args.encoder], 'max_depth': args.max_depth})
     
     if args.pretrained_from:
+        # Load ONLY the encoder weights (parameter names containing 'pretrained' = the DINOv2
+        # encoder) from the relative-depth model. The DPT decoder starts from scratch, because
+        # its output meaning changes (inverse depth -> metric depth).
         model.load_state_dict({k: v for k, v in torch.load(args.pretrained_from, map_location='cpu').items() if 'pretrained' in k}, strict=False)
     
-    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)   # BN statistics shared across GPUs
     model.cuda(local_rank)
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], broadcast_buffers=False,
                                                       output_device=local_rank, find_unused_parameters=True)
     
-    criterion = SiLogLoss().cuda(local_rank)
+    criterion = SiLogLoss().cuda(local_rank)   # scale-invariant log loss (util/loss.py)
     
+    # Two learning rates (same 1:10 ratio as the paper, Sec. 7.1):
+    #   encoder (already well trained)  -> small lr  (5e-6), so it is only gently adjusted
+    #   decoder (new / task-specific)   -> 10x larger (5e-5)
     optimizer = AdamW([{'params': [param for name, param in model.named_parameters() if 'pretrained' in name], 'lr': args.lr},
                        {'params': [param for name, param in model.named_parameters() if 'pretrained' not in name], 'lr': args.lr * 10.0}],
                       lr=args.lr, betas=(0.9, 0.999), weight_decay=0.01)
     
     total_iters = args.epochs * len(trainloader)
     
+    # Best value seen so far for each metric (higher is better for d1-d3, lower for the rest)
     previous_best = {'d1': 0, 'd2': 0, 'd3': 0, 'abs_rel': 100, 'sq_rel': 100, 'rmse': 100, 'rmse_log': 100, 'log10': 100, 'silog': 100}
     
     for epoch in range(args.epochs):
@@ -113,8 +142,9 @@ def main():
                             epoch, args.epochs, previous_best['abs_rel'], previous_best['sq_rel'], previous_best['rmse'], 
                             previous_best['rmse_log'], previous_best['log10'], previous_best['silog']))
         
-        trainloader.sampler.set_epoch(epoch + 1)
+        trainloader.sampler.set_epoch(epoch + 1)   # reshuffle differently every epoch
         
+        # ======================= TRAINING =======================
         model.train()
         total_loss = 0
         
@@ -123,26 +153,29 @@ def main():
             
             img, depth, valid_mask = sample['image'].cuda(), sample['depth'].cuda(), sample['valid_mask'].cuda()
             
+            # Data augmentation: random horizontal flip (image, GT and mask together)
             if random.random() < 0.5:
                 img = img.flip(-1)
                 depth = depth.flip(-1)
                 valid_mask = valid_mask.flip(-1)
             
-            pred = model(img)
+            pred = model(img)   # [B, H, W] predicted depth in metres
             
+            # Loss only on valid pixels whose GT lies inside [min_depth, max_depth]
             loss = criterion(pred, depth, (valid_mask == 1) & (depth >= args.min_depth) & (depth <= args.max_depth))
             
-            loss.backward()
-            optimizer.step()
+            loss.backward()     # backpropagation
+            optimizer.step()    # update weights
             
             total_loss += loss.item()
             
             iters = epoch * len(trainloader) + i
             
+            # "Poly" learning-rate schedule: decays smoothly from lr to 0 over training
             lr = args.lr * (1 - iters / total_iters) ** 0.9
             
-            optimizer.param_groups[0]["lr"] = lr
-            optimizer.param_groups[1]["lr"] = lr * 10.0
+            optimizer.param_groups[0]["lr"] = lr            # encoder
+            optimizer.param_groups[1]["lr"] = lr * 10.0     # decoder (kept at 10x)
             
             if rank == 0:
                 writer.add_scalar('train/loss', loss.item(), iters)
@@ -150,6 +183,7 @@ def main():
             if rank == 0 and i % 100 == 0:
                 logger.info('Iter: {}/{}, LR: {:.7f}, Loss: {:.3f}'.format(i, len(trainloader), optimizer.param_groups[0]['lr'], loss.item()))
         
+        # ======================= VALIDATION =======================
         model.eval()
         
         results = {'d1': torch.tensor([0.0]).cuda(), 'd2': torch.tensor([0.0]).cuda(), 'd3': torch.tensor([0.0]).cuda(), 
@@ -163,21 +197,24 @@ def main():
             
             with torch.no_grad():
                 pred = model(img)
+                # val images are not resized together with their GT, so resize the
+                # prediction to the GT resolution before comparing
                 pred = F.interpolate(pred[:, None], depth.shape[-2:], mode='bilinear', align_corners=True)[0, 0]
             
             valid_mask = (valid_mask == 1) & (depth >= args.min_depth) & (depth <= args.max_depth)
             
             if valid_mask.sum() < 10:
-                continue
+                continue   # skip images with almost no valid GT
             
-            cur_results = eval_depth(pred[valid_mask], depth[valid_mask])
+            cur_results = eval_depth(pred[valid_mask], depth[valid_mask])   # util/metric.py
             
             for k in results.keys():
                 results[k] += cur_results[k]
             nsamples += 1
         
-        torch.distributed.barrier()
+        torch.distributed.barrier()   # wait for all GPUs
         
+        # Sum the metric totals from all GPUs onto GPU 0, then average
         for k in results.keys():
             dist.reduce(results[k], dst=0)
         dist.reduce(nsamples, dst=0)
@@ -198,6 +235,7 @@ def main():
             else:
                 previous_best[k] = min(previous_best[k], (results[k] / nsamples).item())
         
+        # Save the latest model + optimizer state every epoch (overwrites latest.pth)
         if rank == 0:
             checkpoint = {
                 'model': model.state_dict(),

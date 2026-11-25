@@ -1,3 +1,14 @@
+# =============================================================================
+# metric_depth/depth_anything_v2/dpt.py  —  METRIC-DEPTH version of the model
+# -----------------------------------------------------------------------------
+# Identical to ../../depth_anything_v2/dpt.py (see the comments there for the full
+# architecture walkthrough) EXCEPT for the output, which is in METRES:
+#   relative model : last layer ReLU            -> unbounded inverse depth (no unit)
+#   metric model   : last layer Sigmoid (0..1)  x max_depth -> depth in metres
+#                    max_depth = 20 m for indoor (Hypersim), 80 m for outdoor (Virtual KITTI 2)
+# Note the meaning also flips: here a LARGER value = FARTHER away (real depth),
+# while the relative model outputs inverse depth (larger = closer).
+# =============================================================================
 import cv2
 import torch
 import torch.nn as nn
@@ -110,7 +121,7 @@ class DPTHead(nn.Module):
             nn.Conv2d(head_features_1 // 2, head_features_2, kernel_size=3, stride=1, padding=1),
             nn.ReLU(True),
             nn.Conv2d(head_features_2, 1, kernel_size=1, stride=1, padding=0),
-            nn.Sigmoid()
+            nn.Sigmoid()   # DIFFERENCE vs relative model: squash to (0, 1); scaled by max_depth in forward()
         )
     
     def forward(self, out_features, patch_h, patch_w):
@@ -157,7 +168,7 @@ class DepthAnythingV2(nn.Module):
         out_channels=[256, 512, 1024, 1024], 
         use_bn=False, 
         use_clstoken=False,
-        max_depth=20.0
+        max_depth=20.0   # DIFFERENCE: largest depth (metres) the model can output
     ):
         super(DepthAnythingV2, self).__init__()
         
@@ -180,6 +191,7 @@ class DepthAnythingV2(nn.Module):
         
         features = self.pretrained.get_intermediate_layers(x, self.intermediate_layer_idx[self.encoder], return_class_token=True)
         
+        # DIFFERENCE: sigmoid output (0..1) x max_depth -> metric depth in metres, [B, 1, H, W]
         depth = self.depth_head(features, patch_h, patch_w) * self.max_depth
         
         return depth.squeeze(1)

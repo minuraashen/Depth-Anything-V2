@@ -14,6 +14,9 @@ from typing import Callable, Optional
 from torch import Tensor, nn
 
 
+# Feed-forward network of a transformer block (used for ViT-S/B/L):
+#   Linear(dim -> 4*dim) -> GELU -> Linear(4*dim -> dim)
+# Applied to every token independently (no mixing between tokens here).
 class Mlp(nn.Module):
     def __init__(
         self,
